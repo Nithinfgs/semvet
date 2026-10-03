@@ -23,7 +23,10 @@ Options
       --fail-on <mode>    insufficient-bump (default), breaking, never
       --markdown-file <p> Also write the markdown report to this file
   -c, --config <file>     Config file. Default: semvet.config.json or package.json "semvet"
+      --timeout <seconds> Budget for the type-checking phase (default 240)
+      --memory <MB>       Memory cap for the type-checking phase (default 2048)
   -v, --verbose           Show full compiler explanations
+      --color             Force colors even when not writing to a terminal
       --no-color          Disable colors
   -h, --help              Show this help
       --version           Show the semvet version
@@ -37,13 +40,19 @@ function readOwnVersion(): string {
   return (JSON.parse(readFileSync(url, "utf8")) as { version: string }).version;
 }
 
+function positive(raw: string, flag: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new SemvetError(`${flag} needs a positive number.`);
+  return n;
+}
+
 function shouldFail(report: Report, mode: FailOn): boolean {
   if (mode === "never") return false;
   if (mode === "breaking") return report.findings.some((f) => f.severity === "breaking");
   return report.ok === false;
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -54,9 +63,12 @@ function main(argv: string[]): number {
       format: { type: "string", short: "f", default: "text" },
       "fail-on": { type: "string", default: "insufficient-bump" },
       "markdown-file": { type: "string" },
+      timeout: { type: "string" },
+      memory: { type: "string" },
       config: { type: "string", short: "c" },
       verbose: { type: "boolean", short: "v", default: false },
       "no-color": { type: "boolean", default: false },
+      color: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
       version: { type: "boolean", default: false },
     },
@@ -87,9 +99,16 @@ function main(argv: string[]): number {
   if (values.entry && values.entry.length > 0) opts.entries = values.entry;
   if (values.next) opts.next = values.next;
   if (values.config) opts.configPath = values.config;
+  const limits: NonNullable<CheckOptions["limits"]> = {};
+  if (values.timeout) limits.timeoutMs = positive(values.timeout, "--timeout") * 1000;
+  if (values.memory) limits.memoryMb = positive(values.memory, "--memory");
+  opts.limits = limits;
 
-  const report = check(opts);
-  const color = !values["no-color"] && !process.env.NO_COLOR && (process.stdout.isTTY ?? false);
+  const report = await check(opts);
+  const color =
+    !values["no-color"] &&
+    !process.env.NO_COLOR &&
+    (values.color || (process.stdout.isTTY ?? false));
   const text = { color, verbose: values.verbose ?? false };
 
   const rendered =
@@ -107,22 +126,24 @@ function main(argv: string[]): number {
   return shouldFail(report, failOn) ? 1 : 0;
 }
 
-try {
-  process.exitCode = main(process.argv.slice(2));
-} catch (err) {
-  if (err instanceof SemvetError) {
-    process.stderr.write(`semvet: ${err.message}\n`);
-    if (err.hint) process.stderr.write(`  hint: ${err.hint}\n`);
-  } else if (
-    err instanceof TypeError &&
-    "code" in err &&
-    String(err.code).startsWith("ERR_PARSE_ARGS")
-  ) {
-    process.stderr.write(`semvet: ${err.message}\n  Try: semvet --help\n`);
-  } else {
-    process.stderr.write(
-      `semvet: unexpected error\n${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
-    );
-  }
-  process.exitCode = 2;
-}
+main(process.argv.slice(2)).then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (err: unknown) => {
+    if (err instanceof SemvetError) {
+      process.stderr.write(`semvet: ${err.message}\n`);
+      if (err.hint) process.stderr.write(`  hint: ${err.hint}\n`);
+    } else if (
+      err instanceof TypeError &&
+      "code" in err &&
+      String(err.code).startsWith("ERR_PARSE_ARGS")
+    ) {
+      process.stderr.write(`semvet: ${err.message}\n  Try: semvet --help\n`);
+    } else {
+      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      process.stderr.write(`semvet: unexpected error\n${detail}\n`);
+    }
+    process.exitCode = 2;
+  },
+);

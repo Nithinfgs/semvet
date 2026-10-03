@@ -18,6 +18,10 @@ const TITLES: Record<Severity, string> = {
   note: "NOTES",
 };
 
+function clip(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
 function label(f: Finding): string {
   if (f.symbol === "") return f.entry === "." ? "package" : f.entry;
   return f.entry === "." ? f.symbol : `${f.entry} › ${f.symbol}`;
@@ -63,8 +67,9 @@ export function formatText(r: Report, opts: TextOptions): string {
   out.push("");
 
   const groups: Severity[] = ["breaking", "minor", "note"];
+  const transitive = r.findings.filter((f) => f.transitive);
   for (const sev of groups) {
-    const items = r.findings.filter((f) => f.severity === sev);
+    const items = r.findings.filter((f) => f.severity === sev && !f.transitive);
     if (items.length === 0) continue;
     const style = sev === "breaking" ? "red" : sev === "minor" ? "green" : "gray";
     const glyph = sev === "breaking" ? "✖" : sev === "minor" ? "+" : "·";
@@ -72,12 +77,20 @@ export function formatText(r: Report, opts: TextOptions): string {
     const width = Math.min(34, Math.max(...items.map((f) => label(f).length)));
     for (const f of items) {
       out.push(`  ${c(style, glyph)} ${label(f).padEnd(width)}  ${f.message}`);
-      if (f.detail) {
+      if (f.detail && (opts.verbose || f.severity === "breaking")) {
         const lines = f.detail.split("\n");
         const shown = opts.verbose ? lines : lines.slice(0, 2);
-        for (const l of shown) out.push(`      ${c("dim", l)}`);
+        for (const l of shown) out.push(`      ${c("dim", clip(l, opts.verbose ? 400 : 92))}`);
         if (shown.length < lines.length) out.push(`      ${c("dim", "…")}`);
       }
+    }
+    if (sev === "breaking" && transitive.length > 0) {
+      const names = transitive.map(label);
+      const shown = names.slice(0, 6).join(", ");
+      const more = names.length > 6 ? ` and ${names.length - 6} more` : "";
+      out.push(
+        `  ${c("gray", "·")} ${c("dim", `also affected through the types above: ${shown}${more}`)}`,
+      );
     }
     out.push("");
   }

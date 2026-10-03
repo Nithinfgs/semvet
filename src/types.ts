@@ -29,6 +29,8 @@ export interface Finding {
   message: string;
   /** The compiler's own explanation, when there is one. */
   detail?: string;
+  /** Changed only because a type it refers to changed; reported, but grouped in text output. */
+  transitive?: boolean;
 }
 
 export interface Report {

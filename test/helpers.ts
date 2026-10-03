@@ -39,6 +39,7 @@ export interface Case {
   old: string | PkgSpec;
   next: string | PkgSpec;
   config?: Config;
+  limits?: { timeoutMs?: number; memoryMb?: number };
 }
 
 function spec(s: string | PkgSpec): PkgSpec {
@@ -46,7 +47,7 @@ function spec(s: string | PkgSpec): PkgSpec {
 }
 
 /** Build an old and a new package side by side and run semvet between them. */
-export function run(c: Case): Report {
+export async function run(c: Case): Promise<Report> {
   const root = mkdtempSync(path.join(tmpdir(), "semvet-test-"));
   roots.push(root);
   const oldDir = path.join(root, "old");
@@ -54,7 +55,11 @@ export function run(c: Case): Report {
   makePkg(oldDir, spec(c.old));
   makePkg(newDir, spec(c.next));
   if (c.config) writeFileSync(path.join(newDir, "semvet.config.json"), JSON.stringify(c.config));
-  return check({ cwd: newDir, baseline: `dir:${oldDir}` });
+  return await check({
+    cwd: newDir,
+    baseline: `dir:${oldDir}`,
+    ...(c.limits ? { limits: c.limits } : {}),
+  });
 }
 
 export function find(report: Report, symbol: string): Finding | undefined {

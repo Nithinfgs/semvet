@@ -3,6 +3,7 @@ import path from "node:path";
 import ts from "typescript";
 import { findNodeModules } from "./baseline.js";
 import { SemvetError } from "./errors.js";
+import { neutralizeNominal } from "./neutralize.js";
 import type { Finding, Severity } from "./types.js";
 
 export interface EntryPair {
@@ -18,12 +19,25 @@ export interface CompareOptions {
   workDir: string;
   /** Used to find @types for the compiler. */
   projectDir: string;
+  /**
+   * "list": only enumerate exports (removed/added) and report which ones need a compiler check.
+   * "judge": run the compiler check for `subset` only. Omitted: do both.
+   */
+  mode?: "list" | "judge";
+  /** Symbol ids (see `symbolId`) to check in "judge" mode. */
+  subset?: string[];
 }
 
 export interface CompareResult {
   findings: Finding[];
   symbolsCompared: number;
   warnings: string[];
+  /** In "list" mode: ids of the exports that exist on both sides and still need judging. */
+  compared?: string[];
+}
+
+export function symbolId(key: string, symbolPath: string): string {
+  return `${key}\u0000${symbolPath}`;
 }
 
 interface ApiSymbol {
@@ -64,6 +78,9 @@ interface GenericCallable {
   arities: number[];
 }
 
+/** Findings whose cause can be narrowed down to individual members in a second pass. */
+const drillable = new WeakSet<Finding>();
+
 const MAX_NAMESPACE_DEPTH = 4;
 /** Opaque stand-ins for type parameters: no real type is assignable to or from them. */
 const PROBES = ["__P1", "__P2", "__P3"];
@@ -92,6 +109,31 @@ function compilerOptions(projectDir: string): ts.CompilerOptions {
     }
   }
   return options;
+}
+
+/** A compiler host that hides private members and serves the generated witness file. */
+function createHost(
+  copts: ts.CompilerOptions,
+  virtual?: { path: string; text: string },
+): ts.CompilerHost {
+  const host = ts.createCompilerHost(copts, true);
+  const origRead = host.readFile.bind(host);
+  const origExists = host.fileExists.bind(host);
+  const origGet = host.getSourceFile.bind(host);
+  host.readFile = (file) => {
+    if (virtual && file === virtual.path) return virtual.text;
+    const text = origRead(file);
+    if (text !== undefined && /\.[cm]?tsx?$/.test(file) && !file.includes("/node_modules/")) {
+      return neutralizeNominal(file, text);
+    }
+    return text;
+  };
+  host.fileExists = (file) => (virtual !== undefined && file === virtual.path) || origExists(file);
+  host.getSourceFile = (file, lang, ...rest) =>
+    virtual && file === virtual.path
+      ? ts.createSourceFile(file, virtual.text, lang, true)
+      : origGet(file, lang, ...rest);
+  return host;
 }
 
 function toSpecifier(file: string): string {
@@ -324,7 +366,7 @@ export function compareApis(pairs: EntryPair[], options: CompareOptions): Compar
   const roots = pairs
     .flatMap((p) => [p.oldFile, p.newFile])
     .map((f) => f.split(path.sep).join("/"));
-  const program1 = ts.createProgram(roots, copts);
+  const program1 = ts.createProgram(roots, copts, createHost(copts));
   const checker1 = program1.getTypeChecker();
   const collectOpts = {
     ignore: options.ignore.map(globToRegExp),
@@ -374,6 +416,24 @@ export function compareApis(pairs: EntryPair[], options: CompareOptions): Compar
       });
     }
   });
+
+  if (options.mode === "list") {
+    return {
+      findings: sortFindings(findings),
+      symbolsCompared: compared.length,
+      warnings,
+      compared: compared.map((c) => symbolId(c.key, c.path)),
+    };
+  }
+  if (options.mode === "judge") {
+    findings.length = 0;
+    warnings.length = 0;
+    const wanted = new Set(options.subset ?? []);
+    for (let i = compared.length - 1; i >= 0; i--) {
+      const c = compared[i];
+      if (c && !wanted.has(symbolId(c.key, c.path))) compared.splice(i, 1);
+    }
+  }
 
   // Phase 2: write the witness file and let the compiler judge every shared export.
   const lines: string[] = [];
@@ -430,16 +490,7 @@ export function compareApis(pairs: EntryPair[], options: CompareOptions): Compar
   mkdirSync(options.workDir, { recursive: true });
   const witnessPath = path.join(options.workDir, "__semvet_witness__.ts").split(path.sep).join("/");
   const text = lines.join("\n");
-  const host = ts.createCompilerHost(copts, true);
-  const origGet = host.getSourceFile.bind(host);
-  const origExists = host.fileExists.bind(host);
-  const origRead = host.readFile.bind(host);
-  host.getSourceFile = (file, lang, ...rest) =>
-    file === witnessPath
-      ? ts.createSourceFile(file, text, lang, true)
-      : origGet(file, lang, ...rest);
-  host.fileExists = (file) => file === witnessPath || origExists(file);
-  host.readFile = (file) => (file === witnessPath ? text : origRead(file));
+  const host = createHost(copts, { path: witnessPath, text });
 
   const program2 = ts.createProgram([witnessPath], copts, host);
   const witness = program2.getSourceFile(witnessPath);
@@ -477,13 +528,170 @@ export function compareApis(pairs: EntryPair[], options: CompareOptions): Compar
     byPath.set(m.compared, slot);
   }
 
+  const judged: Array<{ c: Compared; f: Finding }> = [];
   for (const c of compared) {
     const verdict = byPath.get(c) ?? {};
     const f = judge(checker1, c, verdict);
-    if (f) findings.push(f);
+    if (f) {
+      findings.push(f);
+      judged.push({ c, f });
+    }
   }
 
+  drillDown(judged, checker1, program2, copts, createHost, cleanRoots, options.workDir);
+
   return { findings: sortFindings(findings), symbolsCompared: compared.length, warnings };
+}
+
+interface MemberRef {
+  name: string;
+  /** "t": member of the declared (instance) type. "v": member of `typeof export`. */
+  side: "t" | "v";
+}
+
+function printed(checker: ts.TypeChecker, p: ts.Symbol): string | undefined {
+  const decl = p.valueDeclaration ?? p.declarations?.[0];
+  if (!decl) return undefined;
+  try {
+    return checker.typeToString(
+      checker.getTypeOfSymbolAtLocation(p, decl),
+      undefined,
+      ts.TypeFormatFlags.NoTruncation,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Members whose printed type differs between old and new (or that vanished). Comparing printed
+ * types first keeps self-referential types from making every member look changed just because
+ * the type they point at changed.
+ */
+function memberRefs(checker: ts.TypeChecker, c: Compared): MemberRef[] {
+  const out: MemberRef[] = [];
+  const consider = (oldProps: ts.Symbol[], newProps: ts.Symbol[], side: "t" | "v") => {
+    const byName = new Map(newProps.map((p) => [p.getName(), p]));
+    for (const p of oldProps) {
+      const name = p.getName();
+      if (!IDENT.test(name) || (side === "v" && name === "prototype")) continue;
+      const other = byName.get(name);
+      if (!other || printed(checker, p) !== printed(checker, other)) out.push({ name, side });
+    }
+  };
+  try {
+    const { oldSym, newSym } = c;
+    if (oldSym.flags & ts.SymbolFlags.Type && !(oldSym.flags & ts.SymbolFlags.TypeParameter)) {
+      consider(
+        checker.getPropertiesOfType(checker.getDeclaredTypeOfSymbol(oldSym)),
+        newSym.flags & ts.SymbolFlags.Type
+          ? checker.getPropertiesOfType(checker.getDeclaredTypeOfSymbol(newSym))
+          : [],
+        "t",
+      );
+    }
+    if (oldSym.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Variable)) {
+      consider(
+        checker.getPropertiesOfType(checker.getTypeOfSymbol(oldSym)),
+        newSym.flags & ts.SymbolFlags.Value
+          ? checker.getPropertiesOfType(checker.getTypeOfSymbol(newSym))
+          : [],
+        "v",
+      );
+    }
+  } catch {
+    // no member information for exotic symbols
+  }
+  return out;
+}
+
+/**
+ * A failed whole-type comparison ends in "'Foo' and 'Foo' are incompatible", which says nothing
+ * about the cause. Re-check member by member and name the ones that actually changed.
+ */
+function drillDown(
+  judged: Array<{ c: Compared; f: Finding }>,
+  checker: ts.TypeChecker,
+  previous: ts.Program,
+  copts: ts.CompilerOptions,
+  makeHost: (o: ts.CompilerOptions, v: { path: string; text: string }) => ts.CompilerHost,
+  cleanRoots: string[],
+  workDir: string,
+): void {
+  const lines: string[] = [];
+  const meta = new Map<number, { f: Finding; member: string }>();
+  const header: string[] = [];
+  const pairIdx = new Set<number>();
+  for (const { c, f } of judged) {
+    if (!drillable.has(f)) continue;
+    const refs = memberRefs(checker, c);
+    if (refs.length === 0) {
+      if (
+        c.oldSym.flags &
+        (ts.SymbolFlags.Class | ts.SymbolFlags.Interface | ts.SymbolFlags.Variable)
+      ) {
+        f.transitive = true;
+        f.message = "affected by changes in the types it references";
+        delete f.detail;
+      }
+      continue;
+    }
+    if (refs.length > 400) continue;
+    pairIdx.add(c.pair);
+    const count = typeParamCount(c.oldSym);
+    const args = count > 0 ? `<${Array.from({ length: count }, () => "any").join(", ")}>` : "";
+    const o = `O${c.pair}.${c.path}`;
+    const n = `N${c.pair}.${c.path}`;
+    for (const r of refs) {
+      meta.set(lines.length, { f, member: r.name });
+      lines.push(
+        r.side === "t"
+          ? `{ const _: ${o}${args}[${JSON.stringify(r.name)}] = null as unknown as ${n}${args}[${JSON.stringify(r.name)}]; }`
+          : `{ const _: (typeof ${o})[${JSON.stringify(r.name)}] = null as unknown as (typeof ${n})[${JSON.stringify(r.name)}]; }`,
+      );
+    }
+  }
+  if (lines.length === 0) return;
+
+  // Reuse the import lines of the main witness file.
+  const first = previous.getSourceFile(previous.getRootFileNames()[0] ?? "");
+  const importLines = (first?.text ?? "")
+    .split("\n")
+    .filter((l) => /^import \* as [ON]\d+ from /.test(l));
+  header.push(...importLines);
+  const witnessPath = `${workDir.split(path.sep).join("/")}/__semvet_members__.ts`;
+  const text = [...header, ...lines].join("\n");
+  const program = ts.createProgram(
+    [witnessPath],
+    copts,
+    makeHost(copts, { path: witnessPath, text }),
+    previous,
+  );
+  const sf = program.getSourceFile(witnessPath);
+  if (!sf) return;
+  const failing = new Map<Finding, Array<{ member: string; text: string }>>();
+  for (const d of program.getSemanticDiagnostics(sf)) {
+    if (d.start === undefined) continue;
+    const line = sf.getLineAndCharacterOfPosition(d.start).line - header.length;
+    const m = meta.get(line);
+    if (!m) continue;
+    const list = failing.get(m.f) ?? [];
+    if (!list.some((x) => x.member === m.member)) {
+      list.push({
+        member: m.member,
+        text: cleanMessage(ts.flattenDiagnosticMessageText(d.messageText, "\n"), cleanRoots),
+      });
+    }
+    failing.set(m.f, list);
+  }
+  for (const [f, list] of failing) {
+    const first = list[0];
+    if (!first) continue;
+    const shown = list.slice(0, 4).map((x) => `\`${x.member}\``);
+    const more = list.length > 4 ? ` and ${list.length - 4} more` : "";
+    f.message = `members changed incompatibly: ${shown.join(", ")}${more}`;
+    f.detail = `${first.member}: ${first.text}`;
+  }
 }
 
 function judge(checker: ts.TypeChecker, c: Compared, v: Verdict): Finding | undefined {
@@ -514,7 +722,9 @@ function judge(checker: ts.TypeChecker, c: Compared, v: Verdict): Finding | unde
     if (isConstantChange(checker, c.oldSym, c.newSym)) {
       return make("constant-changed", "note", "constant has a different literal value", v.value);
     }
-    return make("export-changed", "breaking", explain(v.value), v.value);
+    const f = make("export-changed", "breaking", explain(v.value), v.value);
+    drillable.add(f);
+    return f;
   }
 
   const union = isUnionLike(checker, c.oldSym) || isUnionLike(checker, c.newSym);
@@ -522,7 +732,11 @@ function judge(checker: ts.TypeChecker, c: Compared, v: Verdict): Finding | unde
   if (removedNow.length > 0) {
     // Assignability can't see these: dropping an optional property still type-checks for
     // non-literal values, but callers that wrote the property now get an error.
-    const names = removedNow.map((m) => `\`${m}\``).join(", ");
+    const shown = removedNow.slice(0, 4).map((m) => `\`${m}\``);
+    const names =
+      removedNow.length > 4
+        ? `${shown.join(", ")} and ${removedNow.length - 4} more`
+        : shown.join(", ");
     return make("export-changed", "breaking", `removed member ${names}`, v.A);
   }
 
@@ -545,7 +759,7 @@ function judge(checker: ts.TypeChecker, c: Compared, v: Verdict): Finding | unde
       return make(
         "type-narrowed",
         "breaking",
-        "union or enum lost members that callers may name",
+        "union or enum lost members that callers may use",
         v.B,
       );
     }
@@ -553,12 +767,16 @@ function judge(checker: ts.TypeChecker, c: Compared, v: Verdict): Finding | unde
       return make(
         "type-widened",
         "minor",
-        "union or enum gained members (breaks exhaustive switches on values you return)",
+        "union or enum gained members (can break exhaustive switches)",
         v.A,
       );
     }
   } else {
-    if (aFail) return make("type-narrowed", "breaking", explain(v.A ?? ""), v.A);
+    if (aFail) {
+      const f = make("type-narrowed", "breaking", explain(v.A ?? ""), v.A);
+      drillable.add(f);
+      return f;
+    }
     if (bFail && added.length === 0) {
       return make(
         "export-extended",

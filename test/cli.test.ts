@@ -135,7 +135,7 @@ describe("formatters", () => {
 
   it("renders text without color codes when asked", () => {
     const text = formatText(report, { color: false, verbose: false });
-    assert.doesNotMatch(text, /\u001b\[/);
+    assert.equal(text.includes("\u001b["), false);
     assert.match(text, /BREAKING \(1\)/);
     assert.match(text, /\.\/sub › fresh/);
     assert.match(text, /warning: something odd/);
