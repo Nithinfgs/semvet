@@ -1,0 +1,52 @@
+name: semvet
+description: Check whether your TypeScript package's public API changes need a major bump.
+author: Nithinfgs
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  working-directory:
+    description: Package directory to check.
+    default: "."
+  baseline:
+    description: "What to compare against: npm:<name>@<version>, git:<ref>, dir:<path> or a .tgz. Default is the latest published version."
+    default: ""
+  entry:
+    description: Entry file to compare instead of package.json exports (single file).
+    default: ""
+  next:
+    description: Version you plan to release. Defaults to package.json "version".
+    default: ""
+  fail-on:
+    description: "insufficient-bump (default), breaking or never."
+    default: insufficient-bump
+
+runs:
+  using: composite
+  steps:
+    - name: Build semvet from the action's own source
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        npm ci --no-audit --no-fund --loglevel=error
+        npm run build --silent
+    - name: Run semvet
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        SEMVET_CLI: ${{ github.action_path }}/dist/src/cli.js
+        IN_BASELINE: ${{ inputs.baseline }}
+        IN_ENTRY: ${{ inputs.entry }}
+        IN_NEXT: ${{ inputs.next }}
+        IN_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        args=(--format github --fail-on "$IN_FAIL_ON" --markdown-file "$RUNNER_TEMP/semvet.md")
+        [ -n "$IN_BASELINE" ] && args+=(--baseline "$IN_BASELINE")
+        [ -n "$IN_ENTRY" ] && args+=(--entry "$IN_ENTRY")
+        [ -n "$IN_NEXT" ] && args+=(--next "$IN_NEXT")
+        set +e
+        node "$SEMVET_CLI" "${args[@]}"
+        code=$?
+        [ -f "$RUNNER_TEMP/semvet.md" ] && cat "$RUNNER_TEMP/semvet.md" >> "$GITHUB_STEP_SUMMARY"
+        exit $code

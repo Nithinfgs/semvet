@@ -1,0 +1,29 @@
+name: Wrong result (false positive or false negative)
+description: semvet flagged something that isn't breaking, or missed something that is.
+labels: [bug]
+body:
+  - type: textarea
+    id: pair
+    attributes:
+      label: Old and new declarations
+      description: The smallest pair of `.d.ts` snippets that reproduces it.
+      placeholder: |
+        // old
+        export declare function f(a: string): void;
+        // new
+        export declare function f(a: string, b: number): void;
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what did semvet say?
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: semvet, Node.js and TypeScript versions
+      description: "Output of `semvet --version`, `node -v`, `npx tsc -v`"
+    validations:
+      required: true
