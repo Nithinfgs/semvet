@@ -37,6 +37,13 @@ function verdict(r: Report): { glyph: string; style: "green" | "red" | "yellow";
       text: `${from} → ${to} is only a ${r.declared} bump, but these changes need a ${r.required}.`,
     };
   }
+  if (r.unchecked > 0) {
+    return {
+      glyph: "!",
+      style: "yellow",
+      text: `Partial result: ${r.unchecked} export(s) could not be checked, so the bump can't be confirmed. Needs at least: ${r.required}.`,
+    };
+  }
   if (r.required === "none") {
     return {
       glyph: "✓",

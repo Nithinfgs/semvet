@@ -52,7 +52,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node scripts/run-tests.mjs",
     "demo": "npm run build && node dist/src/cli.js examples/acme-http/current --baseline dir:examples/acme-http/v1.4.0",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepublishOnly": "npm run clean && npm run build",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "typescript": "^5.4.0"

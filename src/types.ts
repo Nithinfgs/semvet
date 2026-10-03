@@ -47,6 +47,8 @@ export interface Report {
   warnings: string[];
   /** Number of exported symbols compared. */
   symbolsCompared: number;
+  /** Exports that could not be checked within the time/memory budget. */
+  unchecked: number;
 }
 
 export interface Config {

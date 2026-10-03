@@ -131,6 +131,7 @@ describe("formatters", () => {
     ok: false,
     warnings: ["something odd"],
     symbolsCompared: 7,
+    unchecked: 0,
   };
 
   it("renders text without color codes when asked", () => {

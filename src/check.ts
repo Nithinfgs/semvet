@@ -73,6 +73,7 @@ export async function check(options: CheckOptions = {}): Promise<Report> {
 
     const findings: Finding[] = comparePackages(baseline.pkg, pkg, oldRes.entries, newRes.entries);
     let symbolsCompared = 0;
+    let unchecked = 0;
     if (pairs.length > 0) {
       const result = await runCompare(
         pairs,
@@ -87,6 +88,7 @@ export async function check(options: CheckOptions = {}): Promise<Report> {
       findings.push(...result.findings);
       warnings.push(...result.warnings);
       symbolsCompared = result.symbolsCompared;
+      unchecked = result.unchecked ?? 0;
     }
 
     const adjusted: Finding[] = [];
@@ -101,7 +103,9 @@ export async function check(options: CheckOptions = {}): Promise<Report> {
     const to = parseVersion(nextRaw);
     const required = requiredBump(adjusted);
     const declared = from && to ? declaredBump(from, to) : undefined;
-    const ok = from && to && declared !== "none" ? satisfies(from, to, required) : undefined;
+    let ok = from && to && declared !== "none" ? satisfies(from, to, required) : undefined;
+    // A partial result can prove a bump is too small, but never that it is enough.
+    if (unchecked > 0 && ok === true) ok = undefined;
 
     return {
       packageName: pkg.name ?? path.basename(projectDir),
@@ -113,6 +117,7 @@ export async function check(options: CheckOptions = {}): Promise<Report> {
       ok,
       warnings,
       symbolsCompared,
+      unchecked,
     };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
