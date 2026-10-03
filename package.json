@@ -1,0 +1,64 @@
+{
+  "name": "semvet",
+  "version": "0.1.0",
+  "description": "Does this release need a major bump? Checks your TypeScript package's public API against the last release using the compiler's own assignability rules.",
+  "keywords": [
+    "semver",
+    "typescript",
+    "breaking-changes",
+    "api",
+    "d.ts",
+    "npm",
+    "release",
+    "ci",
+    "cli"
+  ],
+  "homepage": "https://github.com/Nithinfgs/semvet#readme",
+  "bugs": "https://github.com/Nithinfgs/semvet/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nithinfgs/semvet.git"
+  },
+  "license": "MIT",
+  "author": "Nithinfgs",
+  "type": "module",
+  "bin": {
+    "semvet": "dist/src/cli.js"
+  },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/src",
+    "action.yml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/",
+    "demo": "npm run build && node dist/src/cli.js examples/acme-http/current --baseline dir:examples/acme-http/v1.4.0",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "dependencies": {
+    "typescript": "^5.4.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "@types/node": "^22.0.0"
+  }
+}
