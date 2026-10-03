@@ -133,9 +133,10 @@ function fromGit(ref: string, ctx: Ctx): Baseline {
   } catch {
     throw new SemvetError(`${ctx.projectDir} is not inside a git repository.`);
   }
-  // git reports the resolved path; resolve ours too or symlinked dirs (/var vs /private/var) mismatch.
+  // git reports the fully resolved path; resolve ours the same way or symlinked dirs (macOS /var vs
+  // /private/var) and Windows 8.3 short names (RUNNER~1) produce a bogus relative path.
   const rel = path
-    .relative(realpathSync(top), realpathSync(ctx.projectDir))
+    .relative(realpathSync.native(top), realpathSync.native(ctx.projectDir))
     .split(path.sep)
     .join("/");
   const treeish = rel ? `${ref}:${rel}` : ref;
