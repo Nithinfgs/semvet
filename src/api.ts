@@ -539,7 +539,8 @@ export function compareApis(pairs: EntryPair[], options: CompareOptions): Compar
     const slot: Verdict = byPath.get(m.compared) ?? {};
     const msg = cleanMessage(ts.flattenDiagnosticMessageText(d.messageText, "\n"), cleanRoots);
     if (m.kind === "inst" || m.kind === "meth") {
-      const list = (slot[m.kind] ??= []);
+      const list = slot[m.kind] ?? [];
+      slot[m.kind] = list;
       if (!list.some((x) => x.member === (m.member ?? ""))) {
         list.push({ member: m.member ?? "", text: msg });
       }

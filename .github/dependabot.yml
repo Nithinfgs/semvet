@@ -5,6 +5,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # semvet is built on the TypeScript 5.x compiler API; a major bump needs deliberate work.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      # Keep type definitions in line with the oldest supported Node major.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { compareApis, type EntryPair, sortFindings } from "./api.js";
+import { type EntryPair, sortFindings } from "./api.js";
 import { acquireBaseline } from "./baseline.js";
 import { loadConfig } from "./config.js";
 import { type PackageJson, resolveEntries } from "./entries.js";

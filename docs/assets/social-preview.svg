@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="semvet: does this release need a major bump?">
+<rect width="1280" height="640" fill="#0d1117"/>
+<rect x="0" y="0" width="12" height="640" fill="#ff6b6b"/>
+<g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<text x="80" y="170" font-size="96" font-weight="700" fill="#f0f3f6">semvet</text>
+<text x="80" y="236" font-size="38" fill="#9da7b3">Does this release need a major bump?</text>
+<text x="80" y="288" font-size="26" fill="#6e7681">TypeScript API checks, decided by the compiler.</text>
+</g>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="27">
+<rect x="80" y="340" width="1120" height="190" rx="14" fill="#161b22"/>
+<text x="112" y="392" fill="#7d8590">const _: <tspan fill="#d2a8ff">Old.createClient</tspan> = <tspan fill="#79c0ff">New.createClient</tspan>;</text>
+<text x="112" y="440" fill="#ff6b6b">✖ Target signature provides too few arguments.</text>
+<text x="112" y="488" fill="#e3b341">1.4.0 → 1.5.0 is only a minor bump. Needs a major.</text>
+</g>
+<text x="80" y="590" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24" fill="#6e7681">github.com/Nithinfgs/semvet</text>
+</svg>

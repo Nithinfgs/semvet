@@ -23,7 +23,7 @@ const PALETTE = {
 function parseAnsi(line) {
   const spans = [];
   let style = { color: "default", bold: false, dim: false };
-  const re = /\u001b\[(\d+)m/g;
+  const re = new RegExp(`${String.fromCharCode(27)}\\[(\\d+)m`, "g");
   let last = 0;
   let m = re.exec(line);
   const push = (text) => {
