@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { type PackageJson, resolveEntries } from "./entries.js";
 import { SemvetError } from "./errors.js";
 import { comparePackages } from "./package-rules.js";
+import { DEFAULT_LIMITS, type Limits, runCompare } from "./runner.js";
 import { type Bump, declaredBump, maxBump, parseVersion, satisfies } from "./semver.js";
 import type { Finding, Report, Severity } from "./types.js";
 
@@ -20,6 +21,8 @@ export interface CheckOptions {
   /** Version you intend to release; defaults to package.json "version". */
   next?: string;
   configPath?: string;
+  /** Time and memory budget for the type-checking phase. */
+  limits?: Partial<Limits>;
 }
 
 function requiredBump(findings: Finding[]): Bump {
@@ -31,7 +34,7 @@ function requiredBump(findings: Finding[]): Bump {
   return bump;
 }
 
-export function check(options: CheckOptions = {}): Report {
+export async function check(options: CheckOptions = {}): Promise<Report> {
   const projectDir = path.resolve(options.cwd ?? process.cwd());
   const pkgFile = path.join(projectDir, "package.json");
   if (!existsSync(pkgFile)) throw new SemvetError(`No package.json in ${projectDir}.`);
@@ -71,12 +74,16 @@ export function check(options: CheckOptions = {}): Report {
     const findings: Finding[] = comparePackages(baseline.pkg, pkg, oldRes.entries, newRes.entries);
     let symbolsCompared = 0;
     if (pairs.length > 0) {
-      const result = compareApis(pairs, {
-        ignore: config.ignore ?? [],
-        ignoreTags: config.ignoreTags ?? ["internal", "alpha"],
-        workDir: path.join(tmp, "witness"),
-        projectDir,
-      });
+      const result = await runCompare(
+        pairs,
+        {
+          ignore: config.ignore ?? [],
+          ignoreTags: config.ignoreTags ?? ["internal", "alpha"],
+          workDir: path.join(tmp, "witness"),
+          projectDir,
+        },
+        { ...DEFAULT_LIMITS, ...options.limits },
+      );
       findings.push(...result.findings);
       warnings.push(...result.warnings);
       symbolsCompared = result.symbolsCompared;
