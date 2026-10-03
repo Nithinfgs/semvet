@@ -275,6 +275,31 @@ describe("classes", () => {
     assert.equal(find(r, "C")?.severity, "breaking");
   });
 
+  it("catches a narrowed method parameter that TypeScript's bivariant method check would let through", async () => {
+    const r = await run({
+      old: "export interface I { m(a: string | number): void }",
+      next: "export interface I { m(a: string): void }",
+    });
+    assert.equal(find(r, "I")?.severity, "breaking");
+    assert.match(find(r, "I")?.message ?? "", /method `m`/);
+  });
+
+  it("catches a narrowed class method parameter", async () => {
+    const r = await run({
+      old: "export declare class C { run(mode: 'a' | 'b'): void }",
+      next: "export declare class C { run(mode: 'a'): void }",
+    });
+    assert.equal(find(r, "C")?.severity, "breaking");
+  });
+
+  it("does not flag a widened or merely renamed method parameter", async () => {
+    const r = await run({
+      old: "export interface I { m(a: string): void; n(x: number): void }",
+      next: "export interface I { m(a: string | number): void; n(y: number): void }",
+    });
+    assert.equal(r.required === "major", false);
+  });
+
   it("flags a static method that disappears", async () => {
     const r = await run({
       old: "export declare class C { static make(): C }",

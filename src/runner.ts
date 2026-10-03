@@ -22,6 +22,8 @@ type Message =
   | { ok: true; result: CompareResult }
   | { ok: false; message: string; hint?: string; unexpected?: boolean };
 
+class DeadlineError extends Error {}
+
 class ResourceError extends Error {
   constructor(readonly kind: "memory" | "time") {
     super(kind);
@@ -85,12 +87,7 @@ export async function runCompare(
   const deadline = Date.now() + limits.timeoutMs;
   const attempt = (opts: CompareOptions) => {
     const left = deadline - Date.now();
-    if (left <= 0) {
-      throw new SemvetError(
-        `Comparing the declarations took longer than ${Math.round(limits.timeoutMs / 1000)}s.`,
-        'Narrow the scope with --entry <file> or an "ignore" list in semvet.config.json, or raise --timeout.',
-      );
-    }
+    if (left <= 0) throw new DeadlineError();
     return runJob(pairs, opts, limits.memoryMb, Math.min(left, ATTEMPT_MS));
   };
 
@@ -98,6 +95,12 @@ export async function runCompare(
   try {
     listing = await attempt({ ...options, mode: "list" });
   } catch (err) {
+    if (err instanceof DeadlineError) {
+      throw new SemvetError(
+        `Reading the declarations took longer than ${Math.round(limits.timeoutMs / 1000)}s.`,
+        "Narrow the scope with --entry <file>, or raise --timeout.",
+      );
+    }
     if (!(err instanceof ResourceError)) throw err;
     throw new SemvetError(
       err.kind === "memory"
@@ -110,6 +113,7 @@ export async function runCompare(
   const warnings: string[] = [...listing.warnings];
   const ids = listing.compared ?? [];
   let judged = 0;
+  let outOfTime = 0;
   const skipped: string[] = [];
 
   const judge = async (subset: string[]): Promise<void> => {
@@ -120,6 +124,10 @@ export async function runCompare(
       warnings.push(...r.warnings);
       judged += subset.length;
     } catch (err) {
+      if (err instanceof DeadlineError) {
+        outOfTime += subset.length;
+        return;
+      }
       if (!(err instanceof ResourceError)) throw err;
       if (subset.length === 1) {
         skipped.push(
@@ -145,6 +153,11 @@ export async function runCompare(
   });
   await Promise.all(lanes);
 
+  if (outOfTime > 0) {
+    warnings.push(
+      `Ran out of time (${Math.round(limits.timeoutMs / 1000)}s): ${outOfTime} export(s) were not checked. Raise --timeout or narrow the scope with --entry / "ignore".`,
+    );
+  }
   if (skipped.length > 0) {
     const shown = skipped.slice(0, 5).join(", ");
     const more = skipped.length > 5 ? ` and ${skipped.length - 5} more` : "";
@@ -152,5 +165,10 @@ export async function runCompare(
       `Could not check ${skipped.length} export(s), their types are too large or recursive for the compiler within the limits: ${shown}${more}. The rest were compared normally.`,
     );
   }
-  return { findings: sortFindings(findings), symbolsCompared: judged, warnings };
+  return {
+    findings: sortFindings(findings),
+    symbolsCompared: judged,
+    warnings,
+    unchecked: skipped.length + outOfTime,
+  };
 }

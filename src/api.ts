@@ -34,6 +34,8 @@ export interface CompareResult {
   warnings: string[];
   /** In "list" mode: ids of the exports that exist on both sides and still need judging. */
   compared?: string[];
+  /** Exports that could not be checked within the limits. */
+  unchecked?: number;
 }
 
 export function symbolId(key: string, symbolPath: string): string {
@@ -55,7 +57,7 @@ interface Compared {
   pair: number;
 }
 
-type WitnessKind = "value" | "A" | "B" | "inst";
+type WitnessKind = "value" | "A" | "B" | "inst" | "meth";
 
 interface LineMeta {
   compared: Compared;
@@ -69,6 +71,7 @@ interface Verdict {
   A?: string;
   B?: string;
   inst?: Array<{ member: string; text: string }>;
+  meth?: Array<{ member: string; text: string }>;
 }
 
 /** A generic callable we can compare after replacing its type parameters with opaque probes. */
@@ -485,6 +488,24 @@ export function compareApis(pairs: EntryPair[], options: CompareOptions): Compar
         lines.push(`const _w${id}: typeof _o${id} = _n${id};`);
       }
     }
+    {
+      const count = typeParamCount(c.oldSym);
+      const targs = count > 0 ? `<${Array.from({ length: count }, () => "any").join(", ")}>` : "";
+      for (const r of memberRefs(checker1, c)) {
+        if (!r.strictMethod) continue;
+        const key = JSON.stringify(r.name);
+        const [oe, ne] =
+          r.side === "t"
+            ? [`${o}${targs}[${key}]`, `${n}${targs}[${key}]`]
+            : [`(typeof ${o})[${key}]`, `(typeof ${n})[${key}]`];
+        meta.set(lines.length, { compared: c, kind: "meth", member: r.name });
+        // Written inline, not through an alias: TypeScript would otherwise compare two alias
+        // instantiations by their type arguments (bivariantly for methods) and skip the strict check.
+        lines.push(
+          `{ const _: (...a: Parameters<${oe}>) => ReturnType<${oe}> = null as unknown as (...a: Parameters<${ne}>) => ReturnType<${ne}>; }`,
+        );
+      }
+    }
   }
 
   mkdirSync(options.workDir, { recursive: true });
@@ -517,10 +538,10 @@ export function compareApis(pairs: EntryPair[], options: CompareOptions): Compar
     if (!m) continue;
     const slot: Verdict = byPath.get(m.compared) ?? {};
     const msg = cleanMessage(ts.flattenDiagnosticMessageText(d.messageText, "\n"), cleanRoots);
-    if (m.kind === "inst") {
-      slot.inst ??= [];
-      if (!slot.inst.some((x) => x.member === (m.member ?? ""))) {
-        slot.inst.push({ member: m.member ?? "", text: msg });
+    if (m.kind === "inst" || m.kind === "meth") {
+      const list = (slot[m.kind] ??= []);
+      if (!list.some((x) => x.member === (m.member ?? ""))) {
+        list.push({ member: m.member ?? "", text: msg });
       }
     } else if (slot[m.kind] === undefined) {
       slot[m.kind] = msg;
@@ -547,6 +568,20 @@ interface MemberRef {
   name: string;
   /** "t": member of the declared (instance) type. "v": member of `typeof export`. */
   side: "t" | "v";
+  /** A plain (non-generic, single-signature) method: worth re-checking with strict variance. */
+  strictMethod: boolean;
+}
+
+function isStrictCandidate(checker: ts.TypeChecker, p: ts.Symbol): boolean {
+  if (!(p.flags & ts.SymbolFlags.Method)) return false;
+  const decl = p.valueDeclaration ?? p.declarations?.[0];
+  if (!decl) return false;
+  try {
+    const sigs = checker.getTypeOfSymbolAtLocation(p, decl).getCallSignatures();
+    return sigs.length === 1 && !sigs[0]?.typeParameters?.length;
+  } catch {
+    return false;
+  }
 }
 
 function printed(checker: ts.TypeChecker, p: ts.Symbol): string | undefined {
@@ -576,7 +611,13 @@ function memberRefs(checker: ts.TypeChecker, c: Compared): MemberRef[] {
       const name = p.getName();
       if (!IDENT.test(name) || (side === "v" && name === "prototype")) continue;
       const other = byName.get(name);
-      if (!other || printed(checker, p) !== printed(checker, other)) out.push({ name, side });
+      if (!other || printed(checker, p) !== printed(checker, other)) {
+        out.push({
+          name,
+          side,
+          strictMethod: other !== undefined && isStrictCandidate(checker, p),
+        });
+      }
     }
   };
   try {
@@ -738,6 +779,18 @@ function judge(checker: ts.TypeChecker, c: Compared, v: Verdict): Finding | unde
         ? `${shown.join(", ")} and ${removedNow.length - 4} more`
         : shown.join(", ");
     return make("export-changed", "breaking", `removed member ${names}`, v.A);
+  }
+
+  if (v.meth && v.meth.length > 0) {
+    const names = v.meth.slice(0, 4).map((x) => `\`${x.member}\``);
+    const more = v.meth.length > 4 ? ` and ${v.meth.length - 4} more` : "";
+    const first = v.meth[0];
+    return make(
+      "export-changed",
+      "breaking",
+      `method ${names.join(", ")}${more}: parameter or return type changed incompatibly`,
+      first ? `${first.member}: ${first.text}` : undefined,
+    );
   }
 
   if (v.inst && v.inst.length > 0) {
