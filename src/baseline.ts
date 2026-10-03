@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+} from "node:fs";
 import path from "node:path";
 import type { PackageJson } from "./entries.js";
 import { SemvetError } from "./errors.js";
@@ -125,7 +133,11 @@ function fromGit(ref: string, ctx: Ctx): Baseline {
   } catch {
     throw new SemvetError(`${ctx.projectDir} is not inside a git repository.`);
   }
-  const rel = path.relative(top, ctx.projectDir).split(path.sep).join("/");
+  // git reports the resolved path; resolve ours too or symlinked dirs (/var vs /private/var) mismatch.
+  const rel = path
+    .relative(realpathSync(top), realpathSync(ctx.projectDir))
+    .split(path.sep)
+    .join("/");
   const treeish = rel ? `${ref}:${rel}` : ref;
   const tarFile = path.join(ctx.tmp, "git.tar");
   run("git", ["archive", "--format=tar", "-o", tarFile, treeish], top);

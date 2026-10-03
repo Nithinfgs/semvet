@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { after, describe, it } from "node:test";
+import { check } from "../src/check.js";
 import { find, run } from "./helpers.js";
 
 const d = "export declare function a(): void;";
@@ -162,5 +167,100 @@ describe("limits", () => {
       }),
       (err: Error) => err.name === "SemvetError" && /took (longer|too long)/.test(err.message),
     );
+  });
+});
+
+describe("git baselines", () => {
+  const dirs: string[] = [];
+  after(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  function git(cwd: string, ...args: string[]): void {
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
+      cwd,
+      stdio: "ignore",
+    });
+  }
+
+  function repo(): { root: string; pkg: string } {
+    const root = mkdtempSync(path.join(tmpdir(), "semvet-git-"));
+    dirs.push(root);
+    // The package lives in a subdirectory to exercise the monorepo path handling.
+    const pkg = path.join(root, "packages", "lib");
+    mkdirSync(path.join(pkg, "src"), { recursive: true });
+    writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({ name: "lib", version: "1.0.0", type: "module" }),
+    );
+    writeFileSync(path.join(pkg, "src", "index.ts"), "export function f(a: string): void {}\n");
+    git(root, "init", "-q");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "v1");
+    git(root, "tag", "v1.0.0");
+    return { root, pkg };
+  }
+
+  it("compares the working tree with a tag, from source, inside a subdirectory", async () => {
+    const { pkg } = repo();
+    writeFileSync(
+      path.join(pkg, "src", "index.ts"),
+      "export function f(a: string, b: number): void {}\n",
+    );
+    const r = await check({ cwd: pkg, baseline: "git:v1.0.0", entries: ["src/index.ts"] });
+    assert.equal(find(r, "f")?.severity, "breaking");
+    assert.equal(r.baseline.label, "git:v1.0.0");
+  });
+
+  it("explains how to proceed when the tag has no built types", async () => {
+    const { pkg } = repo();
+    await assert.rejects(check({ cwd: pkg, baseline: "git:v1.0.0" }), (err: Error) =>
+      /no TypeScript declarations/.test(err.message),
+    );
+  });
+
+  it("reports an unknown git ref clearly", async () => {
+    const { pkg } = repo();
+    await assert.rejects(
+      check({ cwd: pkg, baseline: "git:no-such-tag", entries: ["src/index.ts"] }),
+      (err: Error) => err.name === "SemvetError",
+    );
+  });
+});
+
+describe("tarball baselines", () => {
+  it("accepts an `npm pack` tarball as the baseline", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "semvet-tgz-"));
+    try {
+      const oldDir = path.join(root, "old");
+      const newDir = path.join(root, "new");
+      mkdirSync(oldDir, { recursive: true });
+      mkdirSync(newDir, { recursive: true });
+      const pkg = { name: "tgz-pkg", types: "index.d.ts" };
+      writeFileSync(
+        path.join(oldDir, "package.json"),
+        JSON.stringify({ ...pkg, version: "1.0.0" }),
+      );
+      writeFileSync(
+        path.join(oldDir, "index.d.ts"),
+        "export declare function f(): void;\nexport declare function g(): void;",
+      );
+      writeFileSync(
+        path.join(newDir, "package.json"),
+        JSON.stringify({ ...pkg, version: "1.1.0" }),
+      );
+      writeFileSync(path.join(newDir, "index.d.ts"), "export declare function f(): void;");
+      const out = execFileSync("npm", ["pack", "--json", "--pack-destination", root], {
+        cwd: oldDir,
+        encoding: "utf8",
+        shell: process.platform === "win32",
+      });
+      const file = (JSON.parse(out) as Array<{ filename: string }>)[0]?.filename ?? "";
+      const r = await check({ cwd: newDir, baseline: path.join(root, file) });
+      assert.equal(find(r, "g")?.rule, "export-removed");
+      assert.equal(r.ok, false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
