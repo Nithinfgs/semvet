@@ -25,8 +25,8 @@
 > - Method parameters are bivariant even under `strict`, so narrowing one slips through. I re-check plain methods
 >   through a function-type wrapper. Overloaded/generic methods still slip through; that is listed under known limits.
 > - Very recursive APIs can blow the type checker's memory. It runs in worker threads in batches and skips only the
->   offending exports with a warning. I tried it on zod 3.22→3.23 and it exceeded my time budget on that one, so
->   that case produces a partial result rather than a verdict.
+>   offending exports with a warning. zod 3.22→3.23 is my stress case: with a 70-second budget it checks part of the
+>   API and says how many exports it didn't get to. A partial result can still prove a bump is too small, but never that it's enough.
 >
 > It is young. I checked it against commander 11→12 and chalk 4→5 and it flags what those releases are known
 > for, but I'd like to hear where it is wrong. The most useful reply is an old/new `.d.ts` pair with the verdict you
